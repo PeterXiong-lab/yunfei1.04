@@ -175,18 +175,11 @@ def extract_to_notepad_format():
                         else 0
                     )
 
-                    # 数字格式化
-                    kd_str = (
-                        f"{kuaidi_val:.2f}"
-                        .rstrip('0')
-                        .rstrip('.')
-                    )
-
-                    wl_str = (
-                        f"{wuliu_val:.5f}"
-                        .rstrip('0')
-                        .rstrip('.')
-                    )
+                    # ==================================================
+                    # 修改后的数字格式化逻辑：最多保留2位，不强行补0
+                    # ==================================================
+                    kd_str = f"{round(kuaidi_val, 2):.2f}".rstrip('0').rstrip('.')
+                    wl_str = f"{round(wuliu_val, 2):.2f}".rstrip('0').rstrip('.')
 
                     # 生成文本
                     block_text = (
@@ -238,5 +231,5 @@ def extract_to_notepad_format():
 
 
 if __name__ == '__main__':
-
     extract_to_notepad_format()
+    input("\n按任意键退出程序...") # 防止exe打包后双击直接闪退
