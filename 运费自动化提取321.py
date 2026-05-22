@@ -1,235 +1,333 @@
+import os
+import sys
 import pandas as pd
-import re
+from openpyxl import load_workbook
 
-file_path = '321.xlsx'
+MUNICIPALITIES = {'北京市', '上海市', '天津市', '重庆市'}
 
 
-def extract_to_notepad_format():
+# ======================================================
+# 地址解析
+# ======================================================
 
-    print("--- 正在进行智能物流费用提取 ---")
+def parse_address(addr):
+
+    addr = str(addr).strip()
+
+    if addr[:3] in MUNICIPALITIES:
+        province = addr[:3]
+        pe = 3
+
+    elif '自治区' in addr:
+        pe = addr.index('自治区') + 3
+        province = addr[:pe]
+
+    elif '省' in addr:
+        pe = addr.index('省') + 1
+        province = addr[:pe]
+
+    else:
+        province = addr[:3]
+        pe = 3
 
     try:
+        ce = addr.index('市', pe) + 1
+    except:
+        ce = pe
 
-        # ==================================================
-        # 读取Excel
-        # ==================================================
+    city = addr[pe:ce]
 
-        df = pd.read_excel(file_path, header=None)
+    if not city:
+        city = province
 
-        output_blocks = []
+    endings = ['区', '县', '镇', '乡', '旗']
 
-        # ==================================================
-        # 状态变量
-        # ==================================================
+    de = len(addr)
 
-        state = "SEARCH_HEADER"
+    for ch in endings:
 
-        block_order = None
-        block_city = None
-        block_express_name = "韵达"
+        try:
+            pos = addr.index(ch, ce) + 1
 
-        # 更宽松的PO匹配
-        order_pattern = re.compile(r'(PO-[A-Za-z0-9\-]+)')
+            if pos < de:
+                de = pos
 
-        provinces = [
+        except:
+            pass
 
-            '湖南', '湖北', '广东', '山东', '河南', '广西',
-            '重庆', '四川', '江苏', '浙江', '安徽', '福建',
-            '江西', '北京', '天津', '上海', '河北', '山西',
-            '辽宁', '吉林', '黑龙江', '陕西', '甘肃', '青海',
-            '贵州', '云南', '海南', '内蒙古', '西藏',
-            '宁夏', '新疆'
-        ]
+    try:
+        pos = addr.index('市', ce) + 1
 
-        # ==================================================
-        # 开始扫描
-        # ==================================================
+        if pos < de:
+            de = pos
 
-        for index, row in df.iterrows():
+    except:
+        pass
 
-            # 当前行有效内容
-            row_cells = [
+    district = addr[ce:de]
+    detail = addr[de:]
 
-                str(cell).strip()
+    for prefix in [addr[:de], city + district, district]:
 
-                for cell in row
+        if prefix and detail.startswith(prefix):
+            detail = detail[len(prefix):]
+            break
 
-                if pd.notnull(cell)
-                and str(cell).strip() != ''
-            ]
+    return province, city, district, detail
 
-            row_str = " ".join(row_cells)
 
-            # 调试输出（可注释）
-            # print(f"第{index+1}行：{row_str}")
+# ======================================================
+# 自动寻找文件
+# ======================================================
 
-            # ==================================================
-            # 1. 检测仓开始（只认PO）
-            # ==================================================
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-            order_match = order_pattern.search(row_str)
+# 12
+path_12 = None
 
-            if order_match:
+if os.path.exists(os.path.join(CURRENT_DIR, "12.xlsx")):
+    path_12 = os.path.join(CURRENT_DIR, "12.xlsx")
 
-                block_order = order_match.group(1)
+# 123
+path_123 = None
 
-                # 提取仓名前缀
-                prefix_part = row_str.split(block_order)[0].strip()
+if os.path.exists(os.path.join(CURRENT_DIR, "123.xlsx")):
+    path_123 = os.path.join(CURRENT_DIR, "123.xlsx")
 
-                # 去掉省份
-                for p in provinces:
+# 检查
+if not path_12 or not path_123:
 
-                    if prefix_part.startswith(p):
+    print("\n【错误】缺少xlsx文件！")
+    print("请确保：")
+    print("12.xlsx")
+    print("123.xlsx")
+    print("在同一个文件夹内")
 
-                        prefix_part = prefix_part[len(p):].strip()
+    input("\n按回车退出...")
+    sys.exit()
 
-                        break
+output_path = os.path.join(CURRENT_DIR, "123_output.xlsx")
 
-                # 清洗特殊字符
-                prefix_part = re.sub(r'[总件：:\s]', '', prefix_part)
 
-                # 取前两个字作为城市
-                block_city = (
-                    prefix_part[:2]
-                    if len(prefix_part) >= 2
-                    else prefix_part
-                )
+# ======================================================
+# 读取12
+# ======================================================
 
-                # 防止空城市
-                if not block_city:
-                    block_city = "未知"
+print("=================== 第一步：读取12数据 ===================")
 
-                # 重置
-                block_express_name = "韵达"
+df_12 = pd.read_excel(path_12, dtype=str)
 
-                state = "SEARCH_COLUMNS"
+df_12.columns = df_12.columns.str.strip()
 
-                # print(f"发现仓：{block_city} {block_order}")
+# 全部转字符串，防止SKU/手机号/单号精度丢失
+df_12 = df_12.fillna('')
 
-                continue
+# ------------------------------------------------------
+# 自动将所有“广西壮族自治区”替换为“广西省”
+# ------------------------------------------------------
+if '收货地址' in df_12.columns:
+    df_12['收货地址'] = df_12['收货地址'].str.replace('广西壮族自治区', '广西省')
+    print("已将源数据中的'广西壮族自治区'全局替换为'广西省'")
 
-            # ==================================================
-            # 2. 查找快递名称
-            # ==================================================
+print("12表字段：")
+print(list(df_12.columns))
 
-            if state in ["SEARCH_COLUMNS", "SEARCH_REAL_PAY"]:
 
-                for cell in row_cells:
-
-                    if "费用" in cell:
-
-                        # 排除物流费用
-                        if "物流" in cell:
-                            continue
-
-                        # 排除壹米
-                        if "壹米" in cell:
-                            continue
-
-                        express_name = (
-                            cell
-                            .replace("费用", "")
-                            .replace("快递", "")
-                            .strip()
-                        )
-
-                        if express_name:
-                            block_express_name = express_name
-
-                # 进入下一状态
-                state = "SEARCH_REAL_PAY"
-
-            # ==================================================
-            # 3. 查找实付
-            # ==================================================
-
-            if state == "SEARCH_REAL_PAY":
-
-                if "实付" in row_str:
-
-                    valid_numbers = []
-
-                    for cell in row:
-
-                        if pd.notnull(cell):
-
-                            try:
-
-                                val = float(str(cell).strip())
-
-                                valid_numbers.append(val)
-
-                            except:
-                                pass
-
-                    # 防止缺数据
-                    kuaidi_val = (
-                        valid_numbers[0]
-                        if len(valid_numbers) >= 1
-                        else 0
-                    )
-
-                    wuliu_val = (
-                        valid_numbers[1]
-                        if len(valid_numbers) >= 2
-                        else 0
-                    )
-
-                    # ==================================================
-                    # 修改后的数字格式化逻辑：最多保留2位，不强行补0
-                    # ==================================================
-                    kd_str = f"{round(kuaidi_val, 2):.2f}".rstrip('0').rstrip('.')
-                    wl_str = f"{round(wuliu_val, 2):.2f}".rstrip('0').rstrip('.')
-
-                    # 生成文本
-                    block_text = (
-
-                        f"{block_order}\n"
-                        f"辛苦下单邮费链接备注："
-                        f"天猫美团{block_city}仓{block_express_name}\n"
-                        f"快递{kd_str} 物流{wl_str}"
-                    )
-
-                    output_blocks.append(block_text)
-
-                    print(f"【成功提取】{block_order}")
-
-                    # 重置状态
-                    state = "SEARCH_HEADER"
-
-                    block_order = None
-                    block_city = None
-
-        # ==================================================
-        # 输出TXT
-        # ==================================================
-
-        if output_blocks:
-
-            final_text = "\n\n".join(output_blocks)
-
-            with open(
-                "物流费用提取结果.txt",
-                "w",
-                encoding="utf-8"
-            ) as f:
-
-                f.write(final_text)
-
-            print("\n🎉【全部完成】")
-            print(f"成功提取：{len(output_blocks)} 个仓")
-            print("输出文件：物流费用提取结果.txt")
-
+# ======================================================
+# 打开123模板并重构列位置（精准寻找目标并插入左侧）
+# ======================================================
+
+print("\n=================== 第二步：重构123模板列位置 ===================")
+
+wb = load_workbook(path_123)
+ws = wb.active
+
+# 1. 扫描当前所有表头
+current_headers = {}
+for col in range(1, ws.max_column + 1):
+    val = ws.cell(1, col).value
+    if val:
+        current_headers[str(val).strip()] = col
+
+# 2. 寻找锚点列（优先兼容你手动改好的'收货地址（复制）'，备用寻找原'收货地址'）
+anchor_idx = current_headers.get('收货地址（复制）') 
+if not anchor_idx:
+    anchor_idx = current_headers.get('收货地址')
+
+if anchor_idx:
+    print(f"检测到锚点列在第 {anchor_idx} 列，准备进行结构调整...")
+    
+    # 强制确保该锚点列名为“收货地址（复制）”
+    ws.cell(1, anchor_idx).value = '收货地址（复制）'
+    
+    # 检查左侧是否已经存在需要的解析列（防重复运行导致无限插入）
+    if '收货省份' not in current_headers:
+        print(f"正在原列（第 {anchor_idx} 列）的正左侧自动插入 4 个解析列...")
+        
+        # 在锚点位置插入4列，原本的“收货地址（复制）”及其右侧列会自动往右平移4格，公式也会自动适应
+        ws.insert_cols(anchor_idx, 4)
+        
+        # 给新插入的 4 列写上表头
+        ws.cell(1, anchor_idx).value = '收货省份'
+        ws.cell(1, anchor_idx + 1).value = '收货城市'
+        ws.cell(1, anchor_idx + 2).value = '收货区县'
+        ws.cell(1, anchor_idx + 3).value = '收货地址' # 原“详细地址”改名为“收货地址”
+        
+        print("【成功】4个解析列已精确插入至左侧！")
+    else:
+        print("【提示】解析列已存在，跳过插入操作。")
+else:
+    print("【警告】未在123表中检测到 '收货地址' 或 '收货地址（复制）' 列！新列将在最右侧追加。")
+
+# 3. 重新获取最新的表头字典（因为插入列会导致原本的列号全部发生变化，必须重新映射）
+headers_123 = {}
+for col in range(1, ws.max_column + 1):
+    header = ws.cell(1, col).value
+    if header:
+        headers_123[str(header).strip()] = col
+
+print("\n更新后的123表字段：")
+print(list(headers_123.keys()))
+
+
+# ======================================================
+# 行数校验与多余行清理
+# ======================================================
+
+excel_data_rows = ws.max_row - 1
+target_data_count = len(df_12)
+
+print(f"\n[行数统计] 12表实际数据：{target_data_count} 行 | 123模板检测到：{excel_data_rows} 行")
+
+if excel_data_rows > target_data_count:
+    start_delete_row = target_data_count + 2
+    rows_to_delete = excel_data_rows - target_data_count
+    print(f"⚠️ [提示] 模板旧数据较多，正在自动清理末尾第 {start_delete_row} 行起的 {rows_to_delete} 行多余内容...")
+    ws.delete_rows(idx=start_delete_row, amount=rows_to_delete)
+
+
+# ======================================================
+# 自动复制字段
+# ======================================================
+
+print("\n=================== 第三步：复制字段 ===================")
+
+copy_map = {
+    # 基础信息
+    '其它出库业务单号': '其它出库业务单号',
+    '收货人': '收货人',
+    '收货电话': '收货电话',
+    '收货地址': '收货地址（复制）', # 映射至改名后的列
+
+    # 业务字段
+    'SKU采购总⾦额（含税）': '单价',
+    '采购数量（采购单位）': '数量',
+    'SKU编码': 'SKU编码',
+}
+
+for source_col, target_col in copy_map.items():
+
+    if source_col not in df_12.columns:
+        print(f"【警告】12缺少字段：{source_col}")
+        continue
+
+    if target_col not in headers_123:
+        print(f"【警告】123缺少字段：{target_col}")
+        continue
+
+    target_excel_col = headers_123[target_col]
+
+    for i in range(target_data_count):
+        excel_row = i + 2
+        value = df_12.iloc[i][source_col]
+
+        # 编码类字段强制字符串
+        if target_col in ['SKU编码', '其它出库业务单号', '收货电话']:
+            value = str(value).strip()
+            if value.endswith('.0'):
+                value = value[:-2]
+
+        ws.cell(excel_row, target_excel_col).value = value
+
+    print(f"【成功】{source_col} -> {target_col}")
+
+
+# ======================================================
+# 地址解析与备注写入
+# ======================================================
+
+print("\n=================== 第四步：地址解析与备注生成 ===================")
+
+if '收货地址' in df_12.columns:
+
+    parsed_data = []
+
+    for addr in df_12['收货地址']:
+        if str(addr).strip():
+            parsed_data.append(parse_address(addr))
         else:
+            parsed_data.append(("", "", "", ""))
 
-            print("\n❌ 未提取到任何数据")
-            print("请检查Excel格式")
+    parsed_df = pd.DataFrame(
+        parsed_data,
+        columns=[
+            '收货省份',
+            '收货城市',
+            '收货区县',
+            '收货地址'  
+        ]
+    )
 
-    except Exception as e:
+    # 备注拼接
+    clean_addresses = (
+        df_12['收货地址']
+        .astype(str)
+        .fillna('')
+        .str.replace('nan', '')
+        .str.strip()
+    )
 
-        print(f"\n运行出错：{e}")
+    remark_series = (
+        df_12['收货人'].astype(str).fillna('').str.replace('nan', '')
+        + " "
+        + df_12['收货电话'].astype(str).fillna('').str.replace('nan', '')
+        + " "
+        + clean_addresses
+    ).str.strip()
+
+    parsed_df['备注'] = remark_series
+
+    # 写入数据
+    for field in parsed_df.columns:
+        # 如果不存在则自动新增（主要针对“备注”列）
+        if field not in headers_123:
+            new_col = ws.max_column + 1
+            ws.cell(1, new_col).value = field
+            headers_123[field] = new_col
+            print(f"【自动新增列追加至右侧】{field}")
+
+        target_excel_col = headers_123[field]
+
+        for i in range(target_data_count):
+            excel_row = i + 2
+            value = parsed_df.iloc[i][field]
+            ws.cell(excel_row, target_excel_col).value = value
+
+        print(f"【成功】写入：{field}")
 
 
-if __name__ == '__main__':
-    extract_to_notepad_format()
-    input("\n按任意键退出程序...") # 防止exe打包后双击直接闪退
+# ======================================================
+# 保存
+# ======================================================
+
+print("\n=================== 第五步：保存文件 ===================")
+
+wb.save(output_path)
+
+print("\n【✨ 全部完成 ✨】")
+print("列结构已精准调整：4个解析列已精确插入至 '收货地址（复制）' 列的左侧")
+print("已全局替换：广西壮族自治区 -> 广西省")
+print(f"12 表的 {target_data_count} 行数据已全部完整写入！多余旧数据已清理。")
+print(f"输出文件：{output_path}")
+
+input("\n按回车退出...")
